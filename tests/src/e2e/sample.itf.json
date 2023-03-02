@@ -1,0 +1,11 @@
+{
+  "states": [
+    { "lastTx": { "tag": "selfDelegate" } },
+    { "lastTx": { "tag": "delegate" } },
+    { "lastTx": { "tag": "selfUnbond" } },
+    { "lastTx": { "tag": "unbond" } },
+    { "lastTx": { "tag": "endOfEpoch" } },
+    { "lastTx": { "tag": "selfWithdraw" } },
+    { "lastTx": { "tag": "withdraw" } }
+  ]
+}

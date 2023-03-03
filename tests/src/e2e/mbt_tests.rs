@@ -35,68 +35,17 @@ use namada::types::key::{self, ed25519, SigScheme};
 use namada_apps::client;
 use namada_apps::config::Config;
 
-use eyre::eyre;
 use test_case::test_case;
 
-#[derive(Default)]
-struct MBTRunner<'a, R> {
-    reactors: std::collections::HashMap<
-        &'a str,
-        fn(&mut R, &str, &gjson::Value) -> Result<()>,
-    >,
-}
+use super::mbt::Reactor;
 
-impl<'a, R> MBTRunner<'a, R> {
-    fn register<'b>(
-        &mut self,
-        tag: &'b str,
-        func: fn(&mut R, &str, &gjson::Value) -> Result<()>,
-    ) where
-        'b: 'a,
-    {
-        self.reactors.insert(tag, func);
-    }
-
-    fn execute(
-        &self,
-        system: &mut R,
-        tag: &str,
-        state: &gjson::Value,
-    ) -> Result<()> {
-        self.reactors
-            .get(tag)
-            .ok_or(eyre!(format!("tag: {} is not registered.", tag)))
-            .and_then(|f| f(system, tag, state))
-    }
-
-    fn run_with_system<F>(
-        &self,
-        system_f: F,
-        states: &[gjson::Value],
-    ) -> Result<()>
-    where
-        F: FnOnce() -> R,
-    {
-        let mut system = system_f();
-        for e_state in states {
-            let tag = e_state.get("lastTx.tag");
-            self.execute(&mut system, tag.str(), e_state)?;
-        }
-        Ok(())
-    }
-
-    fn run_with_default_system(&self, states: &[gjson::Value]) -> Result<()>
-    where
-        R: Default,
-    {
-        self.run_with_system(Default::default, states)
-    }
-}
+use std::collections::HashMap;
 
 struct NamadaBlockchain {
     test: super::setup::Test,
     validators: Vec<Option<NamadaBgCmd>>,
-    wait_for_epoch: Option<Epoch>,
+    wait_for_epoch: HashMap<String, Epoch>,
+    accounts: HashMap<String, String>,
 }
 
 impl Default for NamadaBlockchain {
@@ -146,13 +95,17 @@ impl Default for NamadaBlockchain {
         Self {
             test,
             validators,
-            wait_for_epoch: None,
+            wait_for_epoch: HashMap::default(),
+            accounts: [("val", "validator-0"), ("user2", BERTHA)]
+                .into_iter()
+                .map(|(x, y)| (x.into(), y.into()))
+                .collect(),
         }
     }
 }
 
-#[test_case("src/e2e/sample.itf.json")]
-fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
+#[test_case("src/e2e/data/traces/example1.itf.json")]
+fn mbt_suite(itf_json_rel_path: &str) -> Result<()> {
     let itf_json_path =
         format!("{}/{}", env!("CARGO_MANIFEST_DIR"), itf_json_rel_path);
 
@@ -160,23 +113,32 @@ fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
 
     let itf_json = gjson::parse(&itf_json_string);
 
-    let mut mbt_runner = MBTRunner::<NamadaBlockchain>::default();
+    let mut mbt_reactor = Reactor::<NamadaBlockchain>::default();
 
-    mbt_runner.register("None", |_, _, _| {
+    mbt_reactor.register("Genesis", |_, _, _| {
         println!("chain is started");
 
         Ok(())
     });
 
-    mbt_runner.register("selfDelegate", |system, _, _state| {
+    mbt_reactor.register("selfDelegate", |system, _, state| {
         let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+
+        let sender = state.get("lastTx.sender");
+        let real_sender = system
+            .accounts
+            .get(sender.str())
+            .map(|x| x.as_str())
+            .expect("account is not present");
+        assert_eq!(real_sender, "validator-0");
+        let amount = state.get("lastTx.value").i64().to_string();
 
         let tx_args = vec![
             "bond",
             "--validator",
-            "validator-0",
+            real_sender,
             "--amount",
-            "10000.0",
+            &amount,
             "--gas-amount",
             "0",
             "--gas-limit",
@@ -199,17 +161,26 @@ fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
         Ok(())
     });
 
-    mbt_runner.register("delegate", |system, _, _state| {
+    mbt_reactor.register("delegate", |system, _, state| {
         let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+
+        let sender = state.get("lastTx.sender");
+        let real_sender = system
+            .accounts
+            .get(sender.str())
+            .map(|x| x.as_str())
+            .expect("account is not present");
+        assert_eq!(real_sender, BERTHA);
+        let amount = state.get("lastTx.value").i64().to_string();
 
         let tx_args = vec![
             "bond",
             "--validator",
             "validator-0",
             "--source",
-            BERTHA,
+            real_sender,
             "--amount",
-            "5000.0",
+            &amount,
             "--gas-amount",
             "0",
             "--gas-limit",
@@ -226,15 +197,24 @@ fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
         Ok(())
     });
 
-    mbt_runner.register("selfUnbond", |system, _, _state| {
+    mbt_reactor.register("selfUnbond", |system, _, state| {
         let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+
+        let sender = state.get("lastTx.sender");
+        let real_sender = system
+            .accounts
+            .get(sender.str())
+            .map(|x| x.as_str())
+            .expect("account is not present");
+        assert_eq!(real_sender, "validator-0");
+        let amount = state.get("lastTx.value").i64().to_string();
 
         let tx_args = vec![
             "unbond",
             "--validator",
-            "validator-0",
+            real_sender,
             "--amount",
-            "5100.0",
+            &amount,
             "--gas-amount",
             "0",
             "--gas-limit",
@@ -251,39 +231,13 @@ fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
             tx_args,
             Some(40)
         )?;
-        client.exp_string("Amount 5100 withdrawable starting from epoch ")?;
-        client.assert_success();
-
-        Ok(())
-    });
-
-    mbt_runner.register("unbond", |system, _, _state| {
-        let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
-
-        let tx_args = vec![
-            "unbond",
-            "--validator",
-            "validator-0",
-            "--source",
-            BERTHA,
-            "--amount",
-            "3200.",
-            "--gas-amount",
-            "0",
-            "--gas-limit",
-            "0",
-            "--gas-token",
-            NAM,
-            "--ledger-address",
-            &validator_one_rpc,
-        ];
-        let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
-        let expected = "Amount 3200 withdrawable starting from epoch ";
+        let expected =
+            format!("Amount {amount} withdrawable starting from epoch ");
         let (_unread, matched) =
             client.exp_regex(&format!("{expected}.*\n"))?;
         let epoch_raw = matched
             .trim()
-            .split_once(expected)
+            .split_once(&expected)
             .unwrap()
             .1
             .split_once('.')
@@ -291,21 +245,153 @@ fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
             .0;
         let delegation_withdrawable_epoch = Epoch::from_str(epoch_raw).unwrap();
 
-        client.assert_success();
+        println!("will wait till {delegation_withdrawable_epoch}");
 
-        system.wait_for_epoch = Some(delegation_withdrawable_epoch);
+        system
+            .wait_for_epoch
+            .insert(sender.str().to_string(), delegation_withdrawable_epoch);
+
+        client.assert_success();
 
         Ok(())
     });
 
-    mbt_runner.register("endOfEpoch", |system, _, _state| {
+    mbt_reactor.register("unbond", |system, _, state| {
+        let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+
+        let sender = state.get("lastTx.sender");
+        let real_sender = system
+            .accounts
+            .get(sender.str())
+            .map(|x| x.as_str())
+            .expect("account is not present");
+        assert_eq!(real_sender, BERTHA);
+        let amount = state.get("lastTx.value").i64().to_string();
+
+        let tx_args = vec![
+            "unbond",
+            "--validator",
+            "validator-0",
+            "--source",
+            real_sender,
+            "--amount",
+            &amount,
+            "--gas-amount",
+            "0",
+            "--gas-limit",
+            "0",
+            "--gas-token",
+            NAM,
+            "--ledger-address",
+            &validator_one_rpc,
+        ];
+        let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
+        let expected =
+            format!("Amount {amount} withdrawable starting from epoch ");
+        let (_unread, matched) =
+            client.exp_regex(&format!("{expected}.*\n"))?;
+        let epoch_raw = matched
+            .trim()
+            .split_once(&expected)
+            .unwrap()
+            .1
+            .split_once('.')
+            .unwrap()
+            .0;
+        let delegation_withdrawable_epoch = Epoch::from_str(epoch_raw).unwrap();
+
+        println!("will wait till {delegation_withdrawable_epoch}");
+
+        system
+            .wait_for_epoch
+            .insert(sender.str().to_string(), delegation_withdrawable_epoch);
+
+        client.assert_success();
+
+        Ok(())
+    });
+
+    mbt_reactor.register("selfWithdrawWithoutWait", |system, _, state| {
+        let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+
+        let sender = state.get("lastTx.sender");
+        let real_sender = system
+            .accounts
+            .get(sender.str())
+            .map(|x| x.as_str())
+            .expect("account is not present");
+        assert_eq!(real_sender, "validator-0");
+
+        let tx_args = vec![
+            "withdraw",
+            "--validator",
+            real_sender,
+            "--gas-amount",
+            "0",
+            "--gas-limit",
+            "0",
+            "--gas-token",
+            NAM,
+            "--ledger-address",
+            &validator_one_rpc,
+        ];
+        let mut client = run_as!(
+            system.test,
+            Who::Validator(0),
+            Bin::Client,
+            tx_args,
+            Some(40)
+        )?;
+        client.exp_string("Transaction is valid.")?;
+        client.assert_success();
+
+        Ok(())
+    });
+
+    mbt_reactor.register("withdrawWithoutWait", |system, _, state| {
+        let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+
+        let sender = state.get("lastTx.sender");
+        let real_sender = system
+            .accounts
+            .get(sender.str())
+            .map(|x| x.as_str())
+            .expect("account is not present");
+        assert_eq!(real_sender, BERTHA);
+
+        // Submit a withdrawal of the delegation
+        let tx_args = vec![
+            "withdraw",
+            "--validator",
+            "validator-0",
+            "--source",
+            real_sender,
+            "--gas-amount",
+            "0",
+            "--gas-limit",
+            "0",
+            "--gas-token",
+            NAM,
+            "--ledger-address",
+            &validator_one_rpc,
+        ];
+        let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
+        client.exp_string("Transaction is valid.")?;
+        client.assert_success();
+
+        Ok(())
+    });
+
+    mbt_reactor.register("waitForEpoch", |system, _, state| {
         let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
         let epoch = get_epoch(&system.test, &validator_one_rpc)?;
 
+        let sender = state.get("lastTx.sender");
+
         let delegation_withdrawable_epoch = system
             .wait_for_epoch
-            .take()
-            .expect("no future epoch to wait");
+            .remove(sender.str())
+            .expect("no future epoch to wait for account");
 
         println!(
             "Current epoch: {}, earliest epoch for withdrawal: {}",
@@ -329,61 +415,46 @@ fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
         Ok(())
     });
 
-    mbt_runner.register("selfWithdraw", |system, _, _state| {
-        let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+    mbt_reactor.register_sequence(
+        "selfWithdraw",
+        vec!["selfWithdrawWithoutWait", "waitForEpoch"],
+    );
+    mbt_reactor.register_sequence(
+        "withdraw",
+        vec!["withdrawWithoutWait", "waitForEpoch"],
+    );
 
-        let tx_args = vec![
-            "withdraw",
-            "--validator",
-            "validator-0",
-            "--gas-amount",
-            "0",
-            "--gas-limit",
-            "0",
-            "--gas-token",
-            NAM,
-            "--ledger-address",
-            &validator_one_rpc,
-        ];
-        let mut client = run_as!(
-            system.test,
-            Who::Validator(0),
-            Bin::Client,
-            tx_args,
-            Some(40)
-        )?;
-        client.exp_string("Transaction is valid.")?;
-        client.assert_success();
+    mbt_reactor.register("endOfEpoch", |system, _, _state| {
+        let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
+        let epoch = get_epoch(&system.test, &validator_one_rpc)?;
+
+        let delegation_withdrawable_epoch = Epoch(epoch.0 + 1);
+
+        println!(
+            "Current epoch: {}, earliest epoch for withdrawal: {}",
+            epoch, delegation_withdrawable_epoch
+        );
+        let start = Instant::now();
+        let loop_timeout = Duration::new(40, 0);
+        loop {
+            if Instant::now().duration_since(start) > loop_timeout {
+                panic!(
+                    "Timed out waiting for epoch: {}",
+                    delegation_withdrawable_epoch
+                );
+            }
+            let epoch = get_epoch(&system.test, &validator_one_rpc)?;
+            if epoch >= delegation_withdrawable_epoch {
+                break;
+            }
+        }
 
         Ok(())
     });
 
-    mbt_runner.register("withdraw", |system, _, _state| {
-        let validator_one_rpc = get_actor_rpc(&system.test, &Who::Validator(0));
-        // Submit a withdrawal of the delegation
-        let tx_args = vec![
-            "withdraw",
-            "--validator",
-            "validator-0",
-            "--source",
-            BERTHA,
-            "--gas-amount",
-            "0",
-            "--gas-limit",
-            "0",
-            "--gas-token",
-            NAM,
-            "--ledger-address",
-            &validator_one_rpc,
-        ];
-        let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
-        client.exp_string("Transaction is valid.")?;
-        client.assert_success();
+    mbt_reactor.register_sequence("None", vec!["Genesis"]);
 
-        Ok(())
-    });
-
-    mbt_runner.register("evidence", |system, _, _state| {
+    mbt_reactor.register("evidence", |system, _, _state| {
         // Copy the first genesis validator base-dir
         let validator_0_base_dir = system.test.get_base_dir(&Who::Validator(0));
         let validator_0_base_dir_copy =
@@ -502,5 +573,5 @@ fn simple_mbt(itf_json_rel_path: &str) -> Result<()> {
         Ok(())
     });
 
-    mbt_runner.run_with_default_system(&itf_json.get("states").array())
+    mbt_reactor.run_with_default_system(&itf_json.get("states").array())
 }

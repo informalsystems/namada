@@ -1,26 +1,40 @@
 use color_eyre::eyre::Result;
 use eyre::eyre;
 
-type ReactorFunc<S> = fn(&mut S, &str, &gjson::Value) -> Result<()>;
+type InitReactor<S> = fn(&gjson::Value) -> Result<S>;
+type StepReactor<S> = fn(&mut S, &gjson::Value) -> Result<()>;
+type InvReactor<S> = fn(&mut S, &gjson::Value) -> Result<bool>;
+type InvStateReactor<S> =
+    fn(&mut S, &gjson::Value) -> Result<serde_json::Value>;
 
-#[derive(Default)]
 pub struct Reactor<'a, S> {
-    reactors: std::collections::HashMap<
-        &'a str,
-        ReactorFunc<S>,
-    >,
+    tag_path: &'a str,
+    init_reactor: InitReactor<S>,
+    step_reactors: std::collections::HashMap<&'a str, StepReactor<S>>,
+    inv_reactors: Vec<InvReactor<S>>,
+    inv_state_reactors: Vec<InvStateReactor<S>>,
     sequence_reactors: std::collections::HashMap<&'a str, Vec<&'a str>>,
 }
 
 impl<'a, S> Reactor<'a, S> {
-    pub fn register<'b>(
-        &mut self,
-        tag: &'b str,
-        func: ReactorFunc<S>,
-    ) where
+    pub fn new(tag_path: &'a str, init_reactor: InitReactor<S>) -> Self {
+        Self {
+            tag_path,
+            init_reactor,
+            step_reactors: Default::default(),
+            inv_reactors: Default::default(),
+            inv_state_reactors: Default::default(),
+            sequence_reactors: Default::default(),
+        }
+    }
+}
+
+impl<'a, S> Reactor<'a, S> {
+    pub fn register<'b>(&mut self, tag: &'b str, func: StepReactor<S>)
+    where
         'b: 'a,
     {
-        self.reactors.insert(tag, func);
+        self.step_reactors.insert(tag, func);
     }
 
     pub fn register_sequence<'b>(&mut self, tag: &'b str, tags: Vec<&'b str>)
@@ -28,10 +42,24 @@ impl<'a, S> Reactor<'a, S> {
         'b: 'a,
     {
         for t in &tags {
-            assert!(self.reactors.contains_key(t))
+            assert!(self.step_reactors.contains_key(t))
         }
 
         self.sequence_reactors.insert(tag, tags);
+    }
+
+    pub fn register_invariant<'b>(&mut self, func: InvReactor<S>)
+    where
+        'b: 'a,
+    {
+        self.inv_reactors.push(func);
+    }
+
+    pub fn register_invariant_state<'b>(&mut self, func: InvStateReactor<S>)
+    where
+        'b: 'a,
+    {
+        self.inv_state_reactors.push(func);
     }
 
     fn execute(
@@ -40,8 +68,8 @@ impl<'a, S> Reactor<'a, S> {
         tag: &str,
         state: &gjson::Value,
     ) -> Result<()> {
-        if let Some(f) = self.reactors.get(tag) {
-            f(system, tag, state)
+        if let Some(f) = self.step_reactors.get(tag) {
+            f(system, state)
         } else if let Some(tags) = self.sequence_reactors.get(tag) {
             for t in tags {
                 self.execute(system, t, state)?
@@ -52,26 +80,36 @@ impl<'a, S> Reactor<'a, S> {
         }
     }
 
-    pub fn run_with_system<F>(
-        &self,
-        system_f: F,
-        states: &[gjson::Value],
-    ) -> Result<()>
-    where
-        F: FnOnce() -> S,
-    {
-        let mut system = system_f();
-        for e_state in states {
-            let tag = e_state.get("lastTx.tag");
+    pub fn test(&self, states: &[gjson::Value]) -> Result<()> {
+        let mut inv_states = vec![];
+
+        let mut system = states
+            .first()
+            .ok_or_else(|| eyre!("trace is empty"))
+            .and_then(|f_state| {
+                let mut system = (self.init_reactor)(&f_state)?;
+                for inv in self.inv_reactors.iter() {
+                    assert!(inv(&mut system, f_state)?);
+                }
+                for inv_st in self.inv_state_reactors.iter() {
+                    inv_states.push(inv_st(&mut system, f_state)?);
+                }
+
+                Ok(system)
+            })?;
+        for e_state in states.iter().skip(1) {
+            let tag = e_state.get(self.tag_path);
             self.execute(&mut system, tag.str(), e_state)?;
+            for inv in self.inv_reactors.iter() {
+                inv(&mut system, e_state)?;
+            }
+
+            for (inv_st, st) in
+                self.inv_state_reactors.iter().zip(inv_states.iter())
+            {
+                assert_eq!(st, &inv_st(&mut system, e_state)?);
+            }
         }
         Ok(())
-    }
-
-    pub fn run_with_default_system(&self, states: &[gjson::Value]) -> Result<()>
-    where
-        S: Default,
-    {
-        self.run_with_system(Default::default, states)
     }
 }

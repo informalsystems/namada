@@ -7,6 +7,10 @@ type InvReactor<S> = fn(&mut S, &gjson::Value) -> Result<bool>;
 type InvStateReactor<S> =
     fn(&mut S, &gjson::Value) -> Result<serde_json::Value>;
 
+use color_eyre::owo_colors::OwoColorize;
+
+use std::time::SystemTime;
+
 pub struct Reactor<'a, S> {
     tag_path: &'a str,
     init_reactor: InitReactor<S>,
@@ -82,6 +86,18 @@ impl<'a, S> Reactor<'a, S> {
 
     pub fn test(&self, states: &[gjson::Value]) -> Result<()> {
         let mut inv_states = vec![];
+        let time = SystemTime::now();
+
+        fn mbt_log(time: SystemTime, tag: &str, data: &str) -> Result<()> {
+            println!(
+                "[{} {: >4}s] {: <15} : {}",
+                "MBT".bright_blue(),
+                time.elapsed()?.as_secs().green(),
+                tag.yellow(),
+                data
+            );
+            Ok(())
+        }
 
         let mut system = states
             .first()
@@ -99,14 +115,17 @@ impl<'a, S> Reactor<'a, S> {
             })?;
         for e_state in states.iter().skip(1) {
             let tag = e_state.get(self.tag_path);
+            mbt_log(time, tag.str(), "Executing Step")?;
             self.execute(&mut system, tag.str(), e_state)?;
             for inv in self.inv_reactors.iter() {
+                mbt_log(time, tag.str(), "Executing Inv")?;
                 inv(&mut system, e_state)?;
             }
 
             for (inv_st, st) in
                 self.inv_state_reactors.iter().zip(inv_states.iter())
             {
+                mbt_log(time, tag.str(), "Executing Inv Step")?;
                 assert_eq!(st, &inv_st(&mut system, e_state)?);
             }
         }

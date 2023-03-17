@@ -24,7 +24,7 @@ use namada_apps::config::genesis::genesis_config::{
 
 use crate::e2e::setup::constants::*;
 
-use crate::e2e::helpers::{get_actor_rpc, get_epoch};
+use crate::e2e::helpers::{find_bonded_stake, get_actor_rpc, get_epoch};
 use crate::e2e::setup::NamadaBgCmd;
 use crate::e2e::setup::{self, default_port_offset, Bin, Who};
 use crate::{run, run_as};
@@ -32,18 +32,20 @@ use crate::{run, run_as};
 use std::net::SocketAddr;
 
 use namada::types::key::{self, ed25519, SigScheme};
+use namada::types::token;
 use namada_apps::client;
 use namada_apps::config::Config;
 
 use crate::e2e::mbt::Reactor;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 struct NamadaBlockchain {
     test: crate::e2e::setup::Test,
     validators: Vec<Option<NamadaBgCmd>>,
     wait_for_epoch: HashMap<String, Epoch>,
-    accounts: HashMap<String, String>,
+    tla_validators: HashSet<String>,
+    tla_accounts: HashMap<String, String>,
 }
 
 impl NamadaBlockchain {
@@ -57,7 +59,7 @@ impl NamadaBlockchain {
                         // probably fine, if not modified
                         min_num_of_blocks: 2,
                         // 5 secs per epoch
-                        epochs_per_year: 60 * 60 * 24 * 365 / 5,
+                        epochs_per_year: 60 * 60 * 24 * 365 / 10,
                         max_expected_time_per_block: 1,
                         ..genesis.parameters
                     };
@@ -97,16 +99,42 @@ impl NamadaBlockchain {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            let accounts = [("val", "validator-0"), ("user2", BERTHA)]
+            let tla_validators =
+                ["val"].into_iter().map(|x| x.into()).collect();
+
+            let tla_accounts = [("val", "validator-0"), ("user2", BERTHA)]
                 .into_iter()
                 .map(|(x, y)| (x.into(), y.into()))
                 .collect();
+
+            let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(0));
+
+            let epoch = get_epoch(&test, &validator_one_rpc)?;
+
+            let delegation_withdrawable_epoch = Epoch(epoch.0 + 1);
+
+            let start = Instant::now();
+            let loop_timeout = Duration::new(40, 0);
+            loop {
+                if Instant::now().duration_since(start) > loop_timeout {
+                    panic!(
+                        "Timed out waiting for epoch: {}",
+                        delegation_withdrawable_epoch
+                    );
+                }
+                let epoch = get_epoch(&test, &validator_one_rpc)?;
+                if epoch >= delegation_withdrawable_epoch {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
 
             Ok(Self {
                 test,
                 validators,
                 wait_for_epoch: HashMap::default(),
-                accounts,
+                tla_validators,
+                tla_accounts,
             })
         });
 
@@ -116,7 +144,7 @@ impl NamadaBlockchain {
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
-                .accounts
+                .tla_accounts
                 .get(sender.str())
                 .map(|x| x.as_str())
                 .expect("account is not present");
@@ -157,7 +185,7 @@ impl NamadaBlockchain {
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
-                .accounts
+                .tla_accounts
                 .get(sender.str())
                 .map(|x| x.as_str())
                 .expect("account is not present");
@@ -194,7 +222,7 @@ impl NamadaBlockchain {
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
-                .accounts
+                .tla_accounts
                 .get(sender.str())
                 .map(|x| x.as_str())
                 .expect("account is not present");
@@ -256,7 +284,7 @@ impl NamadaBlockchain {
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
-                .accounts
+                .tla_accounts
                 .get(sender.str())
                 .map(|x| x.as_str())
                 .expect("account is not present");
@@ -314,7 +342,7 @@ impl NamadaBlockchain {
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
-                .accounts
+                .tla_accounts
                 .get(sender.str())
                 .map(|x| x.as_str())
                 .expect("account is not present");
@@ -352,7 +380,7 @@ impl NamadaBlockchain {
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
-                .accounts
+                .tla_accounts
                 .get(sender.str())
                 .map(|x| x.as_str())
                 .expect("account is not present");
@@ -388,28 +416,23 @@ impl NamadaBlockchain {
 
             let sender = state.get("lastTx.sender");
 
-            let delegation_withdrawable_epoch = system
+            let next_epoch = system
                 .wait_for_epoch
                 .remove(sender.str())
                 .expect("no future epoch to wait for account");
 
-            println!(
-                "Current epoch: {}, earliest epoch for withdrawal: {}",
-                epoch, delegation_withdrawable_epoch
-            );
+            println!("Current epoch: {}, waiting till: {}", epoch, next_epoch);
             let start = Instant::now();
             let loop_timeout = Duration::new(40, 0);
             loop {
                 if Instant::now().duration_since(start) > loop_timeout {
-                    panic!(
-                        "Timed out waiting for epoch: {}",
-                        delegation_withdrawable_epoch
-                    );
+                    panic!("Timed out waiting for epoch: {}", next_epoch);
                 }
                 let epoch = get_epoch(&system.test, &validator_one_rpc)?;
-                if epoch >= delegation_withdrawable_epoch {
+                if epoch >= next_epoch {
                     break;
                 }
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
 
             Ok(())
@@ -420,25 +443,20 @@ impl NamadaBlockchain {
                 get_actor_rpc(&system.test, &Who::Validator(0));
             let epoch = get_epoch(&system.test, &validator_one_rpc)?;
 
-            let delegation_withdrawable_epoch = Epoch(epoch.0 + 1);
+            let next_epoch = Epoch(epoch.0 + 1);
 
-            println!(
-                "Current epoch: {}, earliest epoch for withdrawal: {}",
-                epoch, delegation_withdrawable_epoch
-            );
+            println!("Current epoch: {}, waiting till: {}", epoch, next_epoch);
             let start = Instant::now();
             let loop_timeout = Duration::new(40, 0);
             loop {
                 if Instant::now().duration_since(start) > loop_timeout {
-                    panic!(
-                        "Timed out waiting for epoch: {}",
-                        delegation_withdrawable_epoch
-                    );
+                    panic!("Timed out waiting for epoch: {}", next_epoch);
                 }
                 let epoch = get_epoch(&system.test, &validator_one_rpc)?;
-                if epoch >= delegation_withdrawable_epoch {
+                if epoch >= next_epoch {
                     break;
                 }
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
 
             Ok(())
@@ -574,7 +592,7 @@ impl NamadaBlockchain {
             let validator_one_rpc =
                 get_actor_rpc(&system.test, &Who::Validator(0));
             let balance_offset = system
-                .accounts
+                .tla_accounts
                 .iter()
                 .map(|(tla_acc, blk_acc)| {
                     let tx_args = [
@@ -600,13 +618,58 @@ impl NamadaBlockchain {
 
                     assert!(blk_balance > tla_balance);
 
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+
                     Ok((tla_acc, blk_balance - tla_balance))
                 })
                 .collect::<Result<HashMap<_, _>>>()?;
 
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            Ok(serde_json::json!({ "balance_offset": balance_offset }))
+        });
 
-            Ok(serde_json::to_value(&balance_offset)?)
+        mbt_reactor.register_invariant_state(|system, state| {
+            let validator_one_rpc =
+                get_actor_rpc(&system.test, &Who::Validator(0));
+
+            let blk_epoch =
+                get_epoch(&system.test, &validator_one_rpc)?.0 as i64;
+            let tla_epoch = state.get("epoch").i64();
+
+            Ok(serde_json::json!({ "epoch_offset": blk_epoch - tla_epoch }))
+        });
+
+        mbt_reactor.register_invariant_state(|system, state| {
+            let validator_one_rpc =
+                get_actor_rpc(&system.test, &Who::Validator(0));
+
+            let bonded_stake_offset = system
+                .tla_validators
+                .iter()
+                .map(|val| {
+                    let blk_val =
+                        system.tla_accounts.get(val).ok_or_else(|| {
+                            eyre::eyre!("validator account doesn't exist.")
+                        })?;
+
+                    let blk_bonded_stake =
+                        (find_bonded_stake(
+                            &system.test,
+                            blk_val,
+                            &validator_one_rpc,
+                        )?
+                        .change() as u64
+                            / token::SCALE) as i64;
+                    // second last, as cli returns the staked-bond from last commited epoch, not current one
+                    let tla_bonded_stake =
+                        state.get("totalDeltas.\\#map|@reverse|1.1").i64();
+
+                    Ok((val, blk_bonded_stake - tla_bonded_stake))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
+
+            Ok(serde_json::json!({
+                "bonded_stake_offset": bonded_stake_offset
+            }))
         });
 
         Ok(mbt_reactor)

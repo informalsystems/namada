@@ -88,11 +88,17 @@ impl<'a, S> Reactor<'a, S> {
         let mut inv_states = vec![];
         let time = SystemTime::now();
 
-        fn mbt_log(time: SystemTime, tag: &str, data: &str) -> Result<()> {
+        fn mbt_log(
+            time: SystemTime,
+            index: usize,
+            tag: &str,
+            data: &str,
+        ) -> Result<()> {
             println!(
-                "[{} {: >4}s] {: <15} : {}",
+                "[{} {: >4}s] {: >4}:{: <10}> {}",
                 "MBT".bright_blue(),
                 time.elapsed()?.as_secs().green(),
+                index,
                 tag.yellow(),
                 data
             );
@@ -113,19 +119,19 @@ impl<'a, S> Reactor<'a, S> {
 
                 Ok(system)
             })?;
-        for e_state in states.iter().skip(1) {
+        for (i_state, e_state) in states.iter().enumerate().skip(1) {
             let tag = e_state.get(self.tag_path);
-            mbt_log(time, tag.str(), "Executing Step")?;
+            mbt_log(time, i_state, tag.str(), "Executing Step")?;
             self.execute(&mut system, tag.str(), e_state)?;
             for inv in self.inv_reactors.iter() {
-                mbt_log(time, tag.str(), "Executing Inv")?;
+                mbt_log(time, i_state, tag.str(), "Executing Inv")?;
                 inv(&mut system, e_state)?;
             }
 
             for (inv_st, st) in
                 self.inv_state_reactors.iter().zip(inv_states.iter())
             {
-                mbt_log(time, tag.str(), "Executing Inv Step")?;
+                mbt_log(time, i_state, tag.str(), "Executing Inv Step")?;
                 assert_eq!(st, &inv_st(&mut system, e_state)?);
             }
         }

@@ -38,12 +38,11 @@ use namada_apps::config::Config;
 
 use crate::e2e::mbt::Reactor;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 struct NamadaBlockchain {
     test: crate::e2e::setup::Test,
     validators: Vec<Option<NamadaBgCmd>>,
-    wait_for_epoch: HashMap<String, Epoch>,
     tla_validators: HashSet<String>,
     tla_accounts: HashMap<String, String>,
 }
@@ -132,7 +131,6 @@ impl NamadaBlockchain {
             Ok(Self {
                 test,
                 validators,
-                wait_for_epoch: HashMap::default(),
                 tla_validators,
                 tla_accounts,
             })
@@ -149,14 +147,15 @@ impl NamadaBlockchain {
                 .map(|x| x.as_str())
                 .expect("account is not present");
             assert_eq!(real_sender, "validator-0");
-            let amount = state.get("lastTx.value").i64().to_string();
+            let amount = state.get("lastTx.value").i64();
+            let amount_str = amount.to_string();
 
             let tx_args = vec![
                 "bond",
                 "--validator",
                 real_sender,
                 "--amount",
-                &amount,
+                &amount_str,
                 "--gas-amount",
                 "0",
                 "--gas-limit",
@@ -190,7 +189,8 @@ impl NamadaBlockchain {
                 .map(|x| x.as_str())
                 .expect("account is not present");
             assert_eq!(real_sender, BERTHA);
-            let amount = state.get("lastTx.value").i64().to_string();
+            let amount = state.get("lastTx.value").i64();
+            let amount_str = amount.to_string();
 
             let tx_args = vec![
                 "bond",
@@ -199,7 +199,7 @@ impl NamadaBlockchain {
                 "--source",
                 real_sender,
                 "--amount",
-                &amount,
+                &amount_str,
                 "--gas-amount",
                 "0",
                 "--gas-limit",
@@ -227,14 +227,15 @@ impl NamadaBlockchain {
                 .map(|x| x.as_str())
                 .expect("account is not present");
             assert_eq!(real_sender, "validator-0");
-            let amount = state.get("lastTx.value").i64().to_string();
+            let amount = state.get("lastTx.value").i64();
+            let amount_str = amount.to_string();
 
             let tx_args = vec![
                 "unbond",
                 "--validator",
                 real_sender,
                 "--amount",
-                &amount,
+                &amount_str,
                 "--gas-amount",
                 "0",
                 "--gas-limit",
@@ -251,27 +252,24 @@ impl NamadaBlockchain {
                 tx_args,
                 Some(40)
             )?;
+
             let expected =
-                format!("Amount {amount} withdrawable starting from epoch ");
-            let (_unread, matched) =
-                client.exp_regex(&format!("{expected}.*\n"))?;
-            let epoch_raw = matched
-                .trim()
-                .split_once(&expected)
-                .unwrap()
-                .1
-                .split_once('.')
-                .unwrap()
-                .0;
-            let delegation_withdrawable_epoch =
-                Epoch::from_str(epoch_raw).unwrap();
+                r#"(Amount \d+ withdrawable starting from epoch \d+\.\s*)+"#;
+            let (_unread, matched) = client.exp_regex(expected)?;
 
-            println!("will wait till {delegation_withdrawable_epoch}");
+            let re = regex::Regex::new(
+                r"Amount (\d+) withdrawable starting from epoch (\d+)",
+            )
+            .unwrap();
 
-            system.wait_for_epoch.insert(
-                sender.str().to_string(),
-                delegation_withdrawable_epoch,
-            );
+            let mut map: BTreeMap<i64, i64> = BTreeMap::new();
+            for cap in re.captures_iter(&matched) {
+                let amount = cap[1].parse::<i64>().unwrap();
+                let epoch = cap[2].parse::<i64>().unwrap();
+                *map.entry(epoch).or_default() += amount;
+            }
+
+            assert_eq!(map.iter().next_back().unwrap().1, &amount);
 
             client.assert_success();
 
@@ -289,7 +287,8 @@ impl NamadaBlockchain {
                 .map(|x| x.as_str())
                 .expect("account is not present");
             assert_eq!(real_sender, BERTHA);
-            let amount = state.get("lastTx.value").i64().to_string();
+            let amount = state.get("lastTx.value").i64();
+            let amount_str = amount.to_string();
 
             let tx_args = vec![
                 "unbond",
@@ -298,7 +297,7 @@ impl NamadaBlockchain {
                 "--source",
                 real_sender,
                 "--amount",
-                &amount,
+                &amount_str,
                 "--gas-amount",
                 "0",
                 "--gas-limit",
@@ -309,27 +308,26 @@ impl NamadaBlockchain {
                 &validator_one_rpc,
             ];
             let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
+
             let expected =
-                format!("Amount {amount} withdrawable starting from epoch ");
-            let (_unread, matched) =
-                client.exp_regex(&format!("{expected}.*\n"))?;
-            let epoch_raw = matched
-                .trim()
-                .split_once(&expected)
-                .unwrap()
-                .1
-                .split_once('.')
-                .unwrap()
-                .0;
-            let delegation_withdrawable_epoch =
-                Epoch::from_str(epoch_raw).unwrap();
+                r#"(Amount \d+ withdrawable starting from epoch \d+\.\s*)+"#;
+            let (_unread, matched) = client.exp_regex(expected)?;
 
-            println!("will wait till {delegation_withdrawable_epoch}");
+            println!(">>>>>>>>>>>>> {matched}");
 
-            system.wait_for_epoch.insert(
-                sender.str().to_string(),
-                delegation_withdrawable_epoch,
-            );
+            let re = regex::Regex::new(
+                r"Amount (\d+) withdrawable starting from epoch (\d+)",
+            )
+            .unwrap();
+
+            let mut map: BTreeMap<i64, i64> = BTreeMap::new();
+            for cap in re.captures_iter(&matched) {
+                let amount = cap[1].parse::<i64>().unwrap();
+                let epoch = cap[2].parse::<i64>().unwrap();
+                *map.entry(epoch).or_default() += amount;
+            }
+
+            assert_eq!(map.iter().next_back().unwrap().1, &amount);
 
             client.assert_success();
 
@@ -405,35 +403,6 @@ impl NamadaBlockchain {
             let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
             client.exp_string("Transaction is valid.")?;
             client.assert_success();
-
-            Ok(())
-        });
-
-        mbt_reactor.register("waitForEpoch", |system, state| {
-            let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
-            let epoch = get_epoch(&system.test, &validator_one_rpc)?;
-
-            let sender = state.get("lastTx.sender");
-
-            let next_epoch = system
-                .wait_for_epoch
-                .remove(sender.str())
-                .expect("no future epoch to wait for account");
-
-            println!("Current epoch: {}, waiting till: {}", epoch, next_epoch);
-            let start = Instant::now();
-            let loop_timeout = Duration::new(40, 0);
-            loop {
-                if Instant::now().duration_since(start) > loop_timeout {
-                    panic!("Timed out waiting for epoch: {}", next_epoch);
-                }
-                let epoch = get_epoch(&system.test, &validator_one_rpc)?;
-                if epoch >= next_epoch {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
 
             Ok(())
         });
@@ -676,7 +645,8 @@ impl NamadaBlockchain {
     }
 }
 
-#[test_case::test_case("src/e2e/data/traces/example1.itf.json")]
+#[test_case::test_case("src/e2e/data/traces/example-20-1.itf.json")]
+#[test_case::test_case("src/e2e/data/traces/example-300-1.itf.json")]
 fn mbt_pos(path: &str) -> Result<()> {
     let json_string = std::fs::read_to_string(path)?;
     let json_value = gjson::parse(&json_string);

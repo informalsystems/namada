@@ -50,15 +50,15 @@ struct NamadaBlockchain {
 impl NamadaBlockchain {
     fn get_reactor() -> Result<Reactor<'static, Self>> {
         let mut mbt_reactor = Reactor::new("lastTx.tag", |state| {
-            let num_of_validators: u8 = 1;
+            let num_of_validators: u8 = 2;
 
             let test = setup::network(
                 |genesis| {
                     let parameters = ParametersConfig {
                         // probably fine, if not modified
                         min_num_of_blocks: 2,
-                        // 5 secs per epoch
-                        epochs_per_year: 60 * 60 * 24 * 365 / 10,
+                        // epochs per year = secs per year / secs per epoch
+                        epochs_per_year: 60 * 60 * 24 * 365 / 15,
                         max_expected_time_per_block: 1,
                         ..genesis.parameters
                     };
@@ -106,7 +106,7 @@ impl NamadaBlockchain {
                 .map(|(x, y)| (x.into(), y.into()))
                 .collect();
 
-            let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(0));
+            let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(1));
 
             let epoch = get_epoch(&test, &validator_one_rpc)?;
 
@@ -180,7 +180,7 @@ impl NamadaBlockchain {
 
         mbt_reactor.register("delegate", |system, state| {
             let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
+                get_actor_rpc(&system.test, &Who::Validator(1));
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
@@ -278,7 +278,7 @@ impl NamadaBlockchain {
 
         mbt_reactor.register("unbond", |system, state| {
             let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
+                get_actor_rpc(&system.test, &Who::Validator(1));
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
@@ -374,7 +374,7 @@ impl NamadaBlockchain {
 
         mbt_reactor.register("withdraw", |system, state| {
             let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
+                get_actor_rpc(&system.test, &Who::Validator(1));
 
             let sender = state.get("lastTx.sender");
             let real_sender = system
@@ -409,7 +409,7 @@ impl NamadaBlockchain {
 
         mbt_reactor.register("endOfEpoch", |system, _state| {
             let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
+                get_actor_rpc(&system.test, &Who::Validator(1));
             let epoch = get_epoch(&system.test, &validator_one_rpc)?;
 
             let next_epoch = Epoch(epoch.0 + 1);
@@ -518,13 +518,13 @@ impl NamadaBlockchain {
 
             // Submit a valid token transfer tx to validator 0
             let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
+                get_actor_rpc(&system.test, &Who::Validator(1));
             let tx_args = [
                 "transfer",
                 "--source",
-                BERTHA,
-                "--target",
                 ALBERT,
+                "--target",
+                CHRISTEL,
                 "--token",
                 NAM,
                 "--amount",
@@ -542,11 +542,16 @@ impl NamadaBlockchain {
             client.exp_string("Transaction is valid.")?;
             client.assert_success();
 
+            println!("tx send success");
+
             // Wait for double signing evidence
             let mut validator_1 = system.validators[1]
                 .take()
                 .expect("validator background command is not present")
                 .foreground();
+
+            println!("checking for validator slash");
+
             validator_1.exp_string("Processing evidence")?;
             validator_1.exp_string("Slashing")?;
 
@@ -559,7 +564,7 @@ impl NamadaBlockchain {
 
         mbt_reactor.register_invariant_state(|system, state| {
             let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
+                get_actor_rpc(&system.test, &Who::Validator(1));
             let balance_offset = system
                 .tla_accounts
                 .iter()
@@ -598,18 +603,7 @@ impl NamadaBlockchain {
 
         mbt_reactor.register_invariant_state(|system, state| {
             let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
-
-            let blk_epoch =
-                get_epoch(&system.test, &validator_one_rpc)?.0 as i64;
-            let tla_epoch = state.get("epoch").i64();
-
-            Ok(serde_json::json!({ "epoch_offset": blk_epoch - tla_epoch }))
-        });
-
-        mbt_reactor.register_invariant_state(|system, state| {
-            let validator_one_rpc =
-                get_actor_rpc(&system.test, &Who::Validator(0));
+                get_actor_rpc(&system.test, &Who::Validator(1));
 
             let bonded_stake_offset = system
                 .tla_validators
@@ -641,12 +635,24 @@ impl NamadaBlockchain {
             }))
         });
 
+        mbt_reactor.register_invariant_state(|system, state| {
+            let validator_one_rpc =
+                get_actor_rpc(&system.test, &Who::Validator(1));
+
+            let blk_epoch =
+                get_epoch(&system.test, &validator_one_rpc)?.0 as i64;
+            let tla_epoch = state.get("epoch").i64();
+
+            Ok(serde_json::json!({ "epoch_offset": blk_epoch - tla_epoch }))
+        });
+
         Ok(mbt_reactor)
     }
 }
 
-#[test_case::test_case("src/e2e/data/traces/example-20-1.itf.json")]
-#[test_case::test_case("src/e2e/data/traces/example-300-1.itf.json")]
+// #[test_case::test_case("src/e2e/data/traces/example-20-1.itf.json")]
+// #[test_case::test_case("src/e2e/data/traces/example-300-1.itf.json")]
+#[test_case::test_case("src/e2e/data/traces/example-slash-30-1.itf.json")]
 fn mbt_pos(path: &str) -> Result<()> {
     let json_string = std::fs::read_to_string(path)?;
     let json_value = gjson::parse(&json_string);

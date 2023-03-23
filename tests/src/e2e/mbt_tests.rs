@@ -47,8 +47,8 @@ struct NamadaBlockchain {
     tla_accounts: HashMap<String, String>,
 }
 
-const PIPELINE_LEN: u64 = 2;
-const UNBONDING_LEN: u64 = 6;
+const PIPELINE_LEN: u64 = 1;
+const UNBONDING_LEN: u64 = 2;
 
 impl NamadaBlockchain {
     fn get_reactor() -> Result<Reactor<'static, Self>> {
@@ -58,10 +58,10 @@ impl NamadaBlockchain {
             let test = setup::network(
                 |genesis| {
                     let parameters = ParametersConfig {
-                        // probably fine, if not modified
+                        // min num of blocks per epoch
                         min_num_of_blocks: 2,
                         // epochs per year = secs per year / secs per epoch
-                        epochs_per_year: 60 * 60 * 24 * 365 / 15,
+                        epochs_per_year: 60 * 60 * 24 * 365 / 20,
                         max_expected_time_per_block: 1,
                         ..genesis.parameters
                     };
@@ -626,7 +626,8 @@ impl NamadaBlockchain {
                         .change() as u64
                             / token::SCALE) as i64;
 
-                    // second last, as cli returns the staked-bond from last commited epoch, not current one
+                    // offset with (PIPELINE_LEN + 1)
+                    // as cli returns the staked-bond from last commited epoch, not current one
                     let prev_id = state.get("totalDeltas.\\#map.#").i64()
                         - 1
                         - (PIPELINE_LEN as i64);
@@ -634,7 +635,6 @@ impl NamadaBlockchain {
                     let tla_bonded_stake = state
                         .get(&format!("totalDeltas.\\#map.#(0={prev_id}).1"))
                         .i64();
-                    // .get(&format!("balanceOf.\\#map.#(0=\"{tla_acc}\").1"))
 
                     Ok((val, blk_bonded_stake - tla_bonded_stake))
                 })
@@ -663,7 +663,8 @@ impl NamadaBlockchain {
 // #[test_case::test_case("src/e2e/data/traces/example-20-p1-u2.itf.json")]
 // #[test_case::test_case("src/e2e/data/traces/example-300-p1-u2.itf.json")]
 // #[test_case::test_case("src/e2e/data/traces/example-slash-50-p2-u4.itf.json")]
-#[test_case::test_case("src/e2e/data/traces/example-slash-50-p2-u6.itf.json")]
+// #[test_case::test_case("src/e2e/data/traces/example-slash-50-p2-u6.itf.json")]
+#[test_case::test_case("src/e2e/data/traces/example-slash-30-p1-u2.itf.json")]
 fn mbt_pos(path: &str) -> Result<()> {
     let json_string = std::fs::read_to_string(path)?;
     let json_value = gjson::parse(&json_string);

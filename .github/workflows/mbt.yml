@@ -1,0 +1,97 @@
+name: MBT tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - rano/mbt/cubic-slashing
+
+jobs:
+  mbt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Checkout tendermint fork
+        uses: actions/checkout@v3
+        with:
+          repository: heliaxdev/tendermint
+          ref: v0.1.4-abciplus
+          path: tendermint
+
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "stable"
+
+      - name: Install minimal Rust nightly
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          target: wasm32-unknown-unknown
+
+      - name: Install wasm-opt
+        run: |
+          curl -OL https://github.com/WebAssembly/binaryen/releases/download/version_112/binaryen-version_112-x86_64-linux.tar.gz
+          tar -xf binaryen-version_112-x86_64-linux.tar.gz
+          echo "$(pwd)/binaryen-version_112/bin" >> $GITHUB_PATH
+
+      - name: Setup tendermint
+        working-directory: tendermint
+        run: |
+          make build
+          echo "$(pwd)/build" >> $GITHUB_PATH
+          echo "TENDERMINT=$(pwd)/build/tendermint" >> $GITHUB_ENV
+
+      - name: Cache Rust artifacts
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            **/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Download masp parameters
+        run: |
+          curl --location --remote-name-all --create-dirs --output-dir ~/.masp-params https://github.com/anoma/masp/raw/test_parameters/masp-{spend,output,convert}.params
+
+      - name: Build wasm
+        run: make build-wasm-scripts
+
+      - name: Run cargo build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          toolchain: nightly
+
+      - name: Run cargo build tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          toolchain: nightly
+          args: --tests
+
+      - name: Run cargo test
+        uses: actions-rs/cargo@v1
+        env:
+          RUST_BACKTRACE: 1
+          NAMADA_E2E_KEEP_TEMP: true
+          NAMADA_E2E_DEBUG: true
+          NAMADA_E2E_USE_PREBUILT_BINARIES: true
+          NAMADA_E2E_EPOCH_DURATION: 40
+        with:
+          command: test
+          toolchain: nightly
+          args: mbt_tests -- --test-threads=1 --nocapture
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ failure() }}
+        timeout-minutes: 15

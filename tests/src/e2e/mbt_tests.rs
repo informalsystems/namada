@@ -55,13 +55,20 @@ impl NamadaBlockchain {
         let mut mbt_reactor = Reactor::new("lastTx.tag", |state| {
             let num_of_validators: u8 = 2;
 
+            let secs_per_epoch = std::option_env!("NAMADA_E2E_EPOCH_DURATION")
+                .map(|x| {
+                    x.parse()
+                        .expect("NAMADA_E2E_EPOCH_DURATION is not a number")
+                })
+                .unwrap_or(20);
+
             let test = setup::network(
                 |genesis| {
                     let parameters = ParametersConfig {
                         // min num of blocks per epoch
                         min_num_of_blocks: 2,
                         // epochs per year = secs per year / secs per epoch
-                        epochs_per_year: 60 * 60 * 24 * 365 / 20,
+                        epochs_per_year: 60 * 60 * 24 * 365 / secs_per_epoch,
                         max_expected_time_per_block: 1,
                         ..genesis.parameters
                     };

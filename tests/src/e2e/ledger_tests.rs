@@ -3466,8 +3466,32 @@ fn double_signing_gets_slashed() -> Result<()> {
     use namada_apps::config::Config;
 
     // Setup 2 genesis validator nodes
+    // let test = setup::network(
+    //     |genesis| setup::set_validators(2, genesis, default_port_offset),
+    //     None,
+    // )?;
+
+    let pipeline_len = 1;
+    let unbonding_len = 2;
+    let num_of_validators = 2;
+
     let test = setup::network(
-        |genesis| setup::set_validators(2, genesis, default_port_offset),
+        |genesis| {
+            let pos_params = PosParamsConfig {
+                pipeline_len,
+                unbonding_len,
+                ..genesis.pos_params
+            };
+
+            setup::set_validators(
+                num_of_validators,
+                GenesisConfig {
+                    pos_params,
+                    ..genesis
+                },
+                default_port_offset,
+            )
+        },
         None,
     )?;
 
@@ -3583,6 +3607,25 @@ fn double_signing_gets_slashed() -> Result<()> {
     let mut validator_1 = bg_validator_1.foreground();
     validator_1.exp_string("Processing evidence")?;
     validator_1.exp_string("Slashing")?;
+
+    let epoch = get_epoch(&test, &validator_one_rpc)?;
+    let earliest_update_epoch = epoch + (unbonding_len + 1);
+    println!(
+        "Current epoch: {}, earliest epoch with slashed bond: {}",
+        epoch, earliest_update_epoch
+    );
+    let start = Instant::now();
+    let loop_timeout = Duration::new(40, 0);
+    loop {
+        if Instant::now().duration_since(start) > loop_timeout {
+            panic!("Timed out waiting for epoch: {}", earliest_update_epoch);
+        }
+        let epoch = get_epoch(&test, &validator_one_rpc)?;
+        if epoch >= earliest_update_epoch {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
 
     Ok(())
 }

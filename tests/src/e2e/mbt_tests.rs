@@ -122,8 +122,15 @@ impl NamadaBlockchain {
 
             let delegation_withdrawable_epoch = Epoch(epoch.0 + 1);
 
+            let secs_per_epoch = std::option_env!("NAMADA_E2E_EPOCH_DURATION")
+                .map(|x| {
+                    x.parse()
+                        .expect("NAMADA_E2E_EPOCH_DURATION is not a number")
+                })
+                .unwrap_or(20);
+
             let start = Instant::now();
-            let loop_timeout = Duration::new(40, 0);
+            let loop_timeout = Duration::new(secs_per_epoch + 20, 0);
             loop {
                 if Instant::now().duration_since(start) > loop_timeout {
                     panic!(
@@ -425,8 +432,16 @@ impl NamadaBlockchain {
             let next_epoch = Epoch(epoch.0 + 1);
 
             println!("Current epoch: {}, waiting till: {}", epoch, next_epoch);
+
+            let secs_per_epoch = std::option_env!("NAMADA_E2E_EPOCH_DURATION")
+                .map(|x| {
+                    x.parse()
+                        .expect("NAMADA_E2E_EPOCH_DURATION is not a number")
+                })
+                .unwrap_or(20);
+
             let start = Instant::now();
-            let loop_timeout = Duration::new(40, 0);
+            let loop_timeout = Duration::new(secs_per_epoch + 20, 0);
             loop {
                 if Instant::now().duration_since(start) > loop_timeout {
                     panic!("Timed out waiting for epoch: {}", next_epoch);

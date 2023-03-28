@@ -3579,7 +3579,7 @@ fn double_signing_gets_slashed() -> Result<()> {
     let _bg_validator_0_copy = validator_0_copy.background();
 
     // 5. Submit a valid token transfer tx to validator 0
-    let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(0));
+    let validator_zero_rpc = get_actor_rpc(&test, &Who::Validator(0));
     let tx_args = [
         "transfer",
         "--source",
@@ -3597,7 +3597,7 @@ fn double_signing_gets_slashed() -> Result<()> {
         "--gas-token",
         NAM,
         "--ledger-address",
-        &validator_one_rpc,
+        &validator_zero_rpc,
     ];
     let mut client = run!(test, Bin::Client, tx_args, Some(40))?;
     client.exp_string("Transaction is valid.")?;
@@ -3608,19 +3608,25 @@ fn double_signing_gets_slashed() -> Result<()> {
     validator_1.exp_string("Processing evidence")?;
     validator_1.exp_string("Slashing")?;
 
+    let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(0));
+
     let epoch = get_epoch(&test, &validator_one_rpc)?;
-    let earliest_update_epoch = epoch + (unbonding_len + 1);
+    let earliest_update_epoch = epoch + (unbonding_len + pipeline_len + 1);
     println!(
-        "Current epoch: {}, earliest epoch with slashed bond: {}",
+        "Current epoch: {}, waiting till: {}",
         epoch, earliest_update_epoch
     );
     let start = Instant::now();
-    let loop_timeout = Duration::new(40, 0);
+    let loop_timeout = Duration::new(10 * 60, 0);
     loop {
         if Instant::now().duration_since(start) > loop_timeout {
             panic!("Timed out waiting for epoch: {}", earliest_update_epoch);
         }
         let epoch = get_epoch(&test, &validator_one_rpc)?;
+        println!(
+            "Current epoch: {}, waiting till: {}",
+            epoch, earliest_update_epoch
+        );
         if epoch >= earliest_update_epoch {
             break;
         }

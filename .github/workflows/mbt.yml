@@ -63,6 +63,8 @@ jobs:
           curl --location --remote-name-all --create-dirs --output-dir ~/.masp-params https://github.com/anoma/masp/raw/test_parameters/masp-{spend,output,convert}.params
 
       - name: Build wasm
+        env:
+          RUSTUP_TOOLCHAIN: nightly
         run: make build-wasm-scripts
 
       - name: Run cargo build
@@ -89,7 +91,7 @@ jobs:
         with:
           command: test
           toolchain: nightly
-          args: mbt_tests -- --test-threads=1 --nocapture
+          args: double_signing_gets_slashed -- --test-threads=1 --nocapture
 
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3

@@ -279,7 +279,7 @@ impl NamadaBlockchain {
             )?;
 
             let expected =
-                r#"(Amount \d+ withdrawable starting from epoch \d+\.\s*)+"#;
+                r#"(Amount \d+ withdrawable starting from epoch \d+\.?\s*)+"#;
             let (_unread, matched) = client.exp_regex(expected)?;
 
             let re = regex::Regex::new(
@@ -335,7 +335,7 @@ impl NamadaBlockchain {
             let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
 
             let expected =
-                r#"(Amount \d+ withdrawable starting from epoch \d+\.\s*)+"#;
+                r#"(Amount \d+ withdrawable starting from epoch \d+\.?\s*)+"#;
             let (_unread, matched) = client.exp_regex(expected)?;
 
             println!(">>>>>>>>>>>>> {matched}");

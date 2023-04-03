@@ -3608,7 +3608,7 @@ fn double_signing_gets_slashed() -> Result<()> {
     validator_1.exp_string("Processing evidence")?;
     validator_1.exp_string("Slashing")?;
 
-    let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(0));
+    let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(1));
 
     let epoch = get_epoch(&test, &validator_one_rpc)?;
     let earliest_update_epoch = epoch + (unbonding_len + pipeline_len + 1);

@@ -634,45 +634,43 @@ impl NamadaBlockchain {
             Ok(serde_json::json!({ "balance_offset": balance_offset }))
         });
 
-        mbt_reactor.register_invariant_state(|system, state| {
+        mbt_reactor.register_invariant(|system, state| {
             let validator_one_rpc =
                 get_actor_rpc(&system.test, &Who::Validator(1));
 
-            let bonded_stake_offset = system
-                .tla_validators
-                .iter()
-                .map(|val| {
-                    let blk_val =
-                        system.tla_accounts.get(val).ok_or_else(|| {
-                            eyre::eyre!("validator account doesn't exist.")
-                        })?;
+            for val in &system.tla_validators {
+                let blk_val =
+                    system.tla_accounts.get(val).ok_or_else(|| {
+                        eyre::eyre!("validator account doesn't exist.")
+                    })?;
 
-                    let blk_bonded_stake =
-                        (find_bonded_stake(
-                            &system.test,
-                            blk_val,
-                            &validator_one_rpc,
-                        )?
-                        .change() as u64
-                            / token::SCALE) as i64;
+                let blk_bonded_stake = (find_bonded_stake(
+                    &system.test,
+                    blk_val,
+                    &validator_one_rpc,
+                )?
+                .change() as u64
+                    / token::SCALE)
+                    as i64;
 
-                    // offset with (PIPELINE_LEN + 1)
-                    // as cli returns the staked-bond from last commited epoch, not current one
-                    let prev_id = state.get("totalDeltas.\\#map.#").i64()
-                        - 1
-                        - (PIPELINE_LEN as i64);
+                // offset with (PIPELINE_LEN + 1)
+                // as cli returns the staked-bond from last commited epoch, not current one
+                let prev_id = state.get("totalDeltas.\\#map.#").i64()
+                    - 1
+                    - (PIPELINE_LEN as i64);
 
-                    let tla_bonded_stake = state
-                        .get(&format!("totalDeltas.\\#map.#(0={prev_id}).1"))
-                        .i64();
+                let tla_bonded_stake = state
+                    .get(&format!("totalDeltas.\\#map.#(0={prev_id}).1"))
+                    .i64();
 
-                    Ok((val, blk_bonded_stake - tla_bonded_stake))
-                })
-                .collect::<Result<HashMap<_, _>>>()?;
+                assert_eq!(
+                    blk_bonded_stake, tla_bonded_stake,
+                    "bonded stake mismatch (blockchain vs itf): validator `{}`",
+                    val
+                );
+            }
 
-            Ok(serde_json::json!({
-                "bonded_stake_offset": bonded_stake_offset
-            }))
+            Ok(true)
         });
 
         mbt_reactor.register_invariant_state(|system, state| {

@@ -108,7 +108,7 @@ impl NamadaBlockchain {
                         Who::Validator(validator_id),
                         Bin::Node,
                         args,
-                        Some(40)
+                        Some(secs_per_epoch * 2)
                     )?;
                     validator.exp_string("Namada ledger node started")?;
                     validator.exp_string("This node is a validator")?;
@@ -276,22 +276,22 @@ impl NamadaBlockchain {
             )?;
 
             let expected =
-                r#"(Amount \d+ withdrawable starting from epoch \d+\.?\s*)+"#;
+                r#"(Amount \d+(?:\.\d+)? withdrawable starting from epoch \d+\.?\s*)+"#;
             let (_unread, matched) = client.exp_regex(expected)?;
 
             let re = regex::Regex::new(
-                r"Amount (\d+) withdrawable starting from epoch (\d+)",
+                r"Amount (\d+(?:\.\d+)?) withdrawable starting from epoch (\d+)",
             )
             .unwrap();
 
-            let mut map: BTreeMap<i64, i64> = BTreeMap::new();
+            let mut map: BTreeMap<i64, f64> = BTreeMap::new();
             for cap in re.captures_iter(&matched) {
-                let amount = cap[1].parse::<i64>().unwrap();
+                let amount = cap[1].parse::<f64>().unwrap();
                 let epoch = cap[2].parse::<i64>().unwrap();
                 *map.entry(epoch).or_default() += amount;
             }
 
-            assert_eq!(map.iter().next_back().unwrap().1, &amount);
+            assert!((map.iter().next_back().unwrap().1 - (amount as f64)).abs() < 1e-8);
 
             client.assert_success();
 
@@ -332,22 +332,22 @@ impl NamadaBlockchain {
             let mut client = run!(system.test, Bin::Client, tx_args, Some(40))?;
 
             let expected =
-                r#"(Amount \d+ withdrawable starting from epoch \d+\.?\s*)+"#;
+                r#"(Amount \d+(?:\.\d+)? withdrawable starting from epoch \d+\.?\s*)+"#;
             let (_unread, matched) = client.exp_regex(expected)?;
 
             let re = regex::Regex::new(
-                r"Amount (\d+) withdrawable starting from epoch (\d+)",
+                r"Amount (\d+(?:\.\d+)?) withdrawable starting from epoch (\d+)",
             )
             .unwrap();
 
-            let mut map: BTreeMap<i64, i64> = BTreeMap::new();
+            let mut map: BTreeMap<i64, f64> = BTreeMap::new();
             for cap in re.captures_iter(&matched) {
-                let amount = cap[1].parse::<i64>().unwrap();
+                let amount = cap[1].parse::<f64>().unwrap();
                 let epoch = cap[2].parse::<i64>().unwrap();
                 *map.entry(epoch).or_default() += amount;
             }
 
-            assert_eq!(map.iter().next_back().unwrap().1, &amount);
+            assert!((map.iter().next_back().unwrap().1 - (amount as f64)).abs() < 1e-8);
 
             client.assert_success();
 
@@ -607,8 +607,8 @@ impl NamadaBlockchain {
                     ];
                     let mut client =
                         run!(system.test, Bin::Client, tx_args, Some(40))?;
-                    let (_unread, matched) =
-                        client.exp_regex(&format!("{NAM}:\\s+\\d+\r?\n"))?;
+                    let (_unread, matched) = client
+                        .exp_regex(&format!("{NAM}:\\s+\\d+(\\.\\d+)?\r?\n"))?;
                     let blk_balance: i64 =
                         matched.trim().rsplit_once(" ").unwrap().1.parse()?;
                     client.assert_success();

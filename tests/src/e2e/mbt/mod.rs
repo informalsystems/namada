@@ -1,3 +1,123 @@
+//! A simple library for model-based testing in Rust.
+//!
+//! This library provides a `Reactor` struct that allows users to define a
+//! model, as well as step and invariant functions for that model,
+//! and then execute a test run based on a given set of input states.
+//!
+//! # Examples
+//!
+//! This example demonstrates how to use the MBT library for a simple banking system.
+//!
+//! ```rust
+//! use color_eyre::eyre::{eyre, Result};
+//! use gjson::{self, Value as GJsonValue};
+//! use serde_json::{json, Value as SerdeJsonValue};
+//! use mbt::Reactor;
+//!
+//! struct Bank {
+//!     accounts: std::collections::HashMap<String, f64>,
+//! }
+//!
+//! fn init_bank(state: &GJsonValue) -> Result<Bank> {
+//!     let mut bank = Bank {
+//!         accounts: Default::default(),
+//!     };
+//!     state.get("accounts").each(|name, balance| {
+//!         bank.accounts.insert(name.to_string(), balance.f64());
+//!         true
+//!     });
+//!     Ok(bank)
+//! }
+//!
+//! fn deposit(bank: &mut Bank, state: &GJsonValue) -> Result<()> {
+//!     let account = state.get("account").to_string();
+//!     let amount = state.get("amount").f64();
+//!     bank.accounts.entry(account).and_modify(|b| *b += amount);
+//!     Ok(())
+//! }
+//!
+//! fn withdraw(bank: &mut Bank, state: &GJsonValue) -> Result<()> {
+//!     let account = state.get("account").to_string();
+//!     let amount = state.get("amount").f64();
+//!     let balance = bank
+//!         .accounts
+//!         .get_mut(&account)
+//!         .ok_or_else(|| eyre!("Account not found"))?;
+//!     if *balance >= amount {
+//!         *balance -= amount;
+//!         Ok(())
+//!     } else {
+//!         Err(eyre!("Insufficient balance"))
+//!     }
+//! }
+//!
+//! fn transfer(bank: &mut Bank, state: &GJsonValue) -> Result<()> {
+//!     let src_account = state.get("src_account").to_string();
+//!     let dst_account = state.get("dst_account").to_string();
+//!     let amount = state.get("amount").f64();
+//!
+//!     let src_balance = bank
+//!         .accounts
+//!         .get_mut(&src_account)
+//!         .ok_or_else(|| eyre!("Source account not found"))?;
+//!
+//!     if *src_balance >= amount {
+//!         *src_balance -= amount;
+//!         let dst_balance = bank
+//!             .accounts
+//!             .get_mut(&dst_account)
+//!             .ok_or_else(|| eyre!("Destination account not found"))?;
+//!         *dst_balance += amount;
+//!         Ok(())
+//!     } else {
+//!         Err(eyre!("Insufficient balance in source account"))
+//!     }
+//! }
+//!
+//! fn positive_balance(bank: &mut Bank, _state: &GJsonValue) -> Result<bool> {
+//!     Ok(bank.accounts.values().all(|&balance| balance >= 0.0))
+//! }
+//!
+//! fn total_supply(
+//!     bank: &mut Bank,
+//!     _state: &GJsonValue,
+//! ) -> Result<SerdeJsonValue> {
+//!     let total: f64 = bank.accounts.values().cloned().sum();
+//!     Ok(json!({ "total_supply": total }))
+//! }
+//!
+//! #[test]
+//! fn test_bank() -> Result<()> {
+//!     let actions = vec![
+//!         gjson::parse(
+//!             r#"{ "tag": "init", "accounts": { "Alice": 1000.0, "Bob": 500.0 }}"#,
+//!         ),
+//!         gjson::parse(
+//!             r#"{ "tag": "transfer", "src_account": "Alice", "dst_account": "Bob", "amount": 200.0 }"#,
+//!         ),
+//!         gjson::parse(
+//!             r#"{ "tag": "transfer", "src_account": "Bob", "dst_account": "Alice", "amount": 150.0 }"#,
+//!         ),
+//!         gjson::parse(
+//!             r#"{ "tag": "withdraw", "account": "Bob", "amount": 50.0 }"#,
+//!         ),
+//!         gjson::parse(
+//!             r#"{ "tag": "deposit", "account": "Alice", "amount": 100.0 }"#,
+//!         ),
+//!     ];
+//!
+//!     let mut reactor = Reactor::new("tag", init_bank);
+//!     reactor.register("deposit", deposit);
+//!     reactor.register("withdraw", withdraw);
+//!     reactor.register("transfer", transfer);
+//!     reactor.register_invariant(positive_balance);
+//!     reactor.register_invariant_state(total_supply);
+//!     reactor.test(&actions)?;
+//!
+//!     Ok(())
+//! }
+//! ```
+
 use color_eyre::eyre::Result;
 use eyre::eyre;
 
@@ -34,6 +154,7 @@ impl<'a, S> Reactor<'a, S> {
 }
 
 impl<'a, S> Reactor<'a, S> {
+    /// Registers a step function `func` for the given `tag`.
     pub fn register<'b>(&mut self, tag: &'b str, func: StepReactor<S>)
     where
         'b: 'a,
@@ -41,6 +162,7 @@ impl<'a, S> Reactor<'a, S> {
         self.step_reactors.insert(tag, func);
     }
 
+    /// Registers a sequence of step functions for the given `tag`.
     pub fn register_sequence<'b>(&mut self, tag: &'b str, tags: Vec<&'b str>)
     where
         'b: 'a,
@@ -52,6 +174,7 @@ impl<'a, S> Reactor<'a, S> {
         self.sequence_reactors.insert(tag, tags);
     }
 
+    /// Registers an invariant function `func`.
     pub fn register_invariant<'b>(&mut self, func: InvReactor<S>)
     where
         'b: 'a,
@@ -59,6 +182,7 @@ impl<'a, S> Reactor<'a, S> {
         self.inv_reactors.push(func);
     }
 
+    /// Registers an invariant state function `func`.
     pub fn register_invariant_state<'b>(&mut self, func: InvStateReactor<S>)
     where
         'b: 'a,
@@ -84,6 +208,8 @@ impl<'a, S> Reactor<'a, S> {
         }
     }
 
+    /// Tests the given sequence of `states` using the registered step, sequence,
+    /// and invariant functions.
     pub fn test(&self, states: &[gjson::Value]) -> Result<()> {
         let mut inv_states = vec![];
         let time = SystemTime::now();

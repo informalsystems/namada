@@ -128,7 +128,7 @@ impl NamadaBlockchain {
 
             let epoch = get_epoch(&test, &validator_one_rpc)?;
 
-            let delegation_withdrawable_epoch = Epoch(epoch.0 + 1);
+            let waiting_epoch = Epoch(epoch.0 + 1);
 
             let secs_per_epoch = std::option_env!("NAMADA_E2E_EPOCH_DURATION")
                 .map(|x| {
@@ -141,13 +141,10 @@ impl NamadaBlockchain {
             let loop_timeout = Duration::new(secs_per_epoch + 20, 0);
             loop {
                 if Instant::now().duration_since(start) > loop_timeout {
-                    panic!(
-                        "Timed out waiting for epoch: {}",
-                        delegation_withdrawable_epoch
-                    );
+                    panic!("Timed out waiting for epoch: {}", waiting_epoch);
                 }
                 let epoch = get_epoch(&test, &validator_one_rpc)?;
-                if epoch >= delegation_withdrawable_epoch {
+                if epoch >= waiting_epoch {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_secs(1));
@@ -338,8 +335,6 @@ impl NamadaBlockchain {
                 r#"(Amount \d+ withdrawable starting from epoch \d+\.?\s*)+"#;
             let (_unread, matched) = client.exp_regex(expected)?;
 
-            println!(">>>>>>>>>>>>> {matched}");
-
             let re = regex::Regex::new(
                 r"Amount (\d+) withdrawable starting from epoch (\d+)",
             )
@@ -480,13 +475,12 @@ impl NamadaBlockchain {
             )
             .unwrap();
 
-            // Increment its ports and generate new node ID to avoid conflict
-
             // Same as in `genesis/e2e-tests-single-node.toml` for `validator-0`
             let net_address_0 =
                 SocketAddr::from_str("127.0.0.1:27656").unwrap();
             let net_address_port_0 = net_address_0.port();
 
+            // Increment its ports and generate new node ID to avoid conflict
             let update_config = |ix: u8, mut config: Config| {
                 let first_port = net_address_port_0 + 6 * (ix as u16 + 1);
                 config.ledger.tendermint.p2p_address.set_port(first_port);
